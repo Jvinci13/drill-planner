@@ -3,6 +3,7 @@ import { CATEGORIES, cloneDrill, newDrill, uid } from '../constants';
 import { db } from '../db';
 import { DiagramEditor } from '../diagram/DiagramEditor';
 import { exportDrillsPdf } from '../export/pdf';
+import { NumberField } from '../NumberField';
 import { go, replace } from '../router';
 import type { Diagram, Drill } from '../types';
 import { SaveBadge, useAutosave } from '../useAutosave';
@@ -173,12 +174,7 @@ export function DrillEditorView({ id }: { id: string }) {
             </label>
             <label className="field">
               <span>Duration (min)</span>
-              <input
-                type="number"
-                min={0}
-                value={drill.duration}
-                onChange={(e) => patch({ duration: Math.max(0, Number(e.target.value)) })}
-              />
+              <NumberField min={0} max={240} value={drill.duration} onChange={(duration) => patch({ duration })} />
             </label>
             <label className="field">
               <span>Players</span>

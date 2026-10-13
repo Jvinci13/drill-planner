@@ -6,6 +6,8 @@ import react from '@vitejs/plugin-react';
 // is always found at the same address.
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, strictPort: true },
+  // Polling: native file events were being missed on this machine, leaving
+  // stale modules in the dev server after edits.
+  server: { port: 5173, strictPort: true, watch: { usePolling: true, interval: 300 } },
   preview: { port: 5173, strictPort: true },
 });

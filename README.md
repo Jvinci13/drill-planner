@@ -37,13 +37,16 @@ Drills and sessions are saved automatically in your browser's local storage (Ind
 | `3` | Neutral player | `S` | Shot (thick) |
 | `4` | Goalkeeper | `A` | Area / zone |
 | `5` | Coach | `T` | Text label |
-| `C` | Cone | `G` | Full-size goal |
+| `C` | Cone (press again to change colour) | `G` | Full-size goal |
 | `B` | Ball | `M` | Mini goal |
 | `D` | Mannequin | `O` | Pole |
-| `L` | Agility ladder | | |
+| `L` | Agility ladder | `Q` | Curved lines on/off |
+| `H` | Arrowheads on/off | | |
 
 - Placing tools stay active, so you can click several times to add more. Press `Esc` to finish.
-- Arrows: drag to draw, then drag the blue middle handle to curve the line.
+- Lines: drag to draw. `Q` and `H` set whether new lines are curved and have arrowheads; with a
+  line selected they change that line instead. Fine-tune with the **Bend** slider or by dragging
+  the blue middle handle.
 - `Del` deletes the selection, `Ctrl+D` duplicates it, arrow keys nudge it (`Shift` moves further),
   `Ctrl+Z` / `Ctrl+Y` undo and redo.
 - With nothing selected, the right panel changes the pitch: full, half, final third, or a custom
