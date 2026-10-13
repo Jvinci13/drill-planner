@@ -178,6 +178,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb
 .props { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; align-self: start; }
 .props h4 { font-size: 14px; }
 .props .row input[type='number'] { width: 70px; }
+.check { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; }
+.check input { width: auto; margin: 0; accent-color: var(--brand); }
 .sel-actions { border-top: 1px solid var(--line); padding-top: 10px; }
 .swatches { display: flex; flex-wrap: wrap; gap: 5px; }
 .swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; padding: 0; }

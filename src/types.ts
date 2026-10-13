@@ -52,6 +52,8 @@ export interface Arrow {
   cx?: number;
   cy?: number;
   color: string;
+  /** Draw an arrowhead at the end; undefined means true. */
+  head?: boolean;
 }
 
 export interface Diagram {

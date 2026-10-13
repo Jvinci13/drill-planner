@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { COLOR_KEYS, COLORS, PITCH_PRESETS, uid } from '../constants';
 import type { Arrow, ArrowKind, Diagram, DiagramElement, ElementKind, PitchType } from '../types';
 import { ArrowIcon, DiagramSVG, ElementIcon } from './DiagramSVG';
-import { arrowShape, unitScale, viewBox } from './geometry';
+import { NumberField } from '../NumberField';
+import { arrowShape, getBend, unitScale, viewBox, withBend } from './geometry';
 
 type Tool =
   | { t: 'select' }
@@ -55,12 +56,17 @@ const HOTKEYS: Record<string, Tool> = {
   ...Object.fromEntries(ARROWS.map((a) => [a.key, { t: 'arrow', kind: a.kind } as Tool])),
 };
 
+/** Order the cone tool steps through when C is pressed again. */
+const CONE_COLORS = ['orange', 'yellow', 'red', 'blue', 'green', 'white', 'purple', 'black'];
+/** Bend given to lines drawn while "Curved" is on. */
+const DEFAULT_BEND = 0.25;
+
 const ROTATABLE = new Set<ElementKind>(['goal', 'minigoal', 'mannequin', 'ladder', 'text', 'cone']);
 
 const HINTS: Record<Tool['t'], string> = {
   select: 'Click to select · drag to move · Del delete · Ctrl+D duplicate · letter keys pick tools (hover a tool to see its key)',
   place: 'Click the pitch to place · keep clicking to add more · Esc to finish',
-  arrow: 'Drag to draw · drag the middle handle to curve · Esc to finish',
+  arrow: 'Drag to draw · Q curved on/off · H arrowhead on/off · drag the middle handle to bend · Esc to finish',
   zone: 'Drag to draw an area · Esc to finish',
 };
 
@@ -72,6 +78,11 @@ function isTyping(e: KeyboardEvent) {
 export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (d: Diagram) => void }) {
   const [tool, setTool] = useState<Tool>({ t: 'select' });
   const [selected, setSelected] = useState<string | null>(null);
+  // Drawing defaults for new lines and cones; they persist while switching tools.
+  const [curved, setCurved] = useState(false);
+  const [heads, setHeads] = useState(true);
+  const [coneColor, setConeColor] = useState('orange');
+  const [focusLabel, setFocusLabel] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<Drag | null>(null);
   const valueRef = useRef(value);
@@ -116,6 +127,8 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     commit({ ...value, elements: value.elements.map((e) => (e.id === id ? { ...e, ...patch } : e)) });
   const updateArrow = (id: string, patch: Partial<Arrow>) =>
     commit({ ...value, arrows: value.arrows.map((a) => (a.id === id ? { ...a, ...patch } : a)) });
+  const updateArrowRef = useRef(updateArrow);
+  updateArrowRef.current = updateArrow;
 
   const removeSelected = useCallback(() => {
     const v = valueRef.current;
@@ -193,14 +206,45 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
         const step = e.shiftKey ? 2 : 0.5;
         const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
         if (d) nudge(d[0], d[1]);
-      } else if (!ctrl && !e.altKey && HOTKEYS[e.key.toUpperCase()]) {
+      } else if (ctrl || e.altKey) {
+        return;
+      } else if (e.key.toUpperCase() === 'C') {
+        e.preventDefault();
+        // First press picks the cone tool; further presses cycle its colour.
+        if (tool.t === 'place' && tool.kind === 'cone') {
+          const next = CONE_COLORS[(CONE_COLORS.indexOf(coneColor) + 1) % CONE_COLORS.length];
+          setConeColor(next);
+          setTool({ t: 'place', kind: 'cone', color: next });
+        } else {
+          setTool({ t: 'place', kind: 'cone', color: coneColor });
+        }
+      } else if (e.key.toUpperCase() === 'Q') {
+        e.preventDefault();
+        const a = valueRef.current.arrows.find((x) => x.id === selected);
+        if (a) updateArrowRef.current(a.id, withBend(a, getBend(a) ? 0 : DEFAULT_BEND));
+        else setCurved((c) => !c);
+      } else if (e.key.toUpperCase() === 'H') {
+        e.preventDefault();
+        const a = valueRef.current.arrows.find((x) => x.id === selected);
+        if (a) updateArrowRef.current(a.id, { head: a.head === false });
+        else setHeads((h) => !h);
+      } else if (HOTKEYS[e.key.toUpperCase()]) {
         e.preventDefault();
         setTool(HOTKEYS[e.key.toUpperCase()]);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [doUndo, doRedo, duplicateSelected, removeSelected, nudge, selected]);
+  }, [doUndo, doRedo, duplicateSelected, removeSelected, nudge, selected, tool, coneColor]);
+
+  // After placing a text label, focus its input with the placeholder selected so typing replaces it.
+  useEffect(() => {
+    if (!focusLabel) return;
+    setFocusLabel(false);
+    const input = document.getElementById('prop-label') as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
+  }, [focusLabel]);
 
   const toPt = (e: React.PointerEvent): Pt => {
     const svg = svgRef.current!;
@@ -244,14 +288,26 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
       commit({ ...v, elements: [...v.elements, el] });
       setSelected(el.id);
       if (tool.kind === 'text') {
+        // Keep the browser from moving focus to the page on mousedown, which would
+        // steal it back from the label input focused below.
+        e.preventDefault();
         setTool({ t: 'select' });
-        requestAnimationFrame(() => document.getElementById('prop-label')?.focus());
+        setFocusLabel(true);
       }
       return;
     }
 
     if (tool.t === 'arrow') {
-      const a: Arrow = { id: uid(), kind: tool.kind, x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y, color: 'auto' };
+      const a: Arrow = {
+        id: uid(),
+        kind: tool.kind,
+        x1: pt.x,
+        y1: pt.y,
+        x2: pt.x,
+        y2: pt.y,
+        color: 'auto',
+        ...(heads ? {} : { head: false }),
+      };
       drag.current = { type: 'newArrow', id: a.id, before: v };
       onChange({ ...v, arrows: [...v.arrows, a] });
       setSelected(a.id);
@@ -314,7 +370,14 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
         ),
       };
     } else if (d.type === 'newArrow') {
-      next = { ...next, arrows: next.arrows.map((a) => (a.id === d.id ? { ...a, x2: pt.x, y2: pt.y } : a)) };
+      next = {
+        ...next,
+        arrows: next.arrows.map((a) => {
+          if (a.id !== d.id) return a;
+          const moved = { ...a, x2: pt.x, y2: pt.y };
+          return curved ? withBend(moved, DEFAULT_BEND) : moved;
+        }),
+      };
     } else if (d.type === 'newZone') {
       next = {
         ...next,
@@ -393,9 +456,9 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
             title={q.title}
             hotkey={q.key}
             active={tool.t === 'place' && tool.kind === q.kind}
-            onClick={() => setTool({ t: 'place', kind: q.kind, color: q.color })}
+            onClick={() => setTool({ t: 'place', kind: q.kind, color: q.kind === 'cone' ? coneColor : q.color })}
           >
-            <ElementIcon el={{ kind: q.kind, color: q.color }} />
+            <ElementIcon el={{ kind: q.kind, color: q.kind === 'cone' ? coneColor : q.color }} />
           </ToolButton>
         ))}
         <div className="toolbar-label">Lines</div>
@@ -407,9 +470,29 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
             active={tool.t === 'arrow' && tool.kind === a.kind}
             onClick={() => setTool({ t: 'arrow', kind: a.kind })}
           >
-            <ArrowIcon kind={a.kind} />
+            <ArrowIcon kind={a.kind} curved={curved} head={heads} />
           </ToolButton>
         ))}
+        <ToolButton
+          active={curved}
+          title="Draw curved lines (or curve the selected line)"
+          hotkey="Q"
+          onClick={() =>
+            selArrow
+              ? updateArrow(selArrow.id, withBend(selArrow, getBend(selArrow) ? 0 : DEFAULT_BEND))
+              : setCurved(!curved)
+          }
+        >
+          <ArrowIcon kind="pass" curved head={false} />
+        </ToolButton>
+        <ToolButton
+          active={heads}
+          title="Arrowheads on/off (or toggle the selected line's)"
+          hotkey="H"
+          onClick={() => (selArrow ? updateArrow(selArrow.id, { head: selArrow.head === false }) : setHeads(!heads))}
+        >
+          <ArrowIcon kind="pass" />
+        </ToolButton>
         <div className="toolbar-label">Mark</div>
         <ToolButton active={tool.t === 'zone'} title="Area / zone" hotkey="A" onClick={() => setTool({ t: 'zone' })}>
           <ElementIcon el={{ kind: 'zone', color: 'blue' }} />
@@ -437,6 +520,7 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
         <DiagramSVG
           diagram={value}
           interactive
+          label="Drill diagram editor"
           svgRef={svgRef}
           className={`canvas tool-${tool.t}`}
           onPointerDown={onPointerDown}
@@ -514,6 +598,9 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
                   value={selEl.label ?? ''}
                   maxLength={selEl.kind === 'player' ? 3 : 60}
                   onChange={(e) => updateEl(selEl.id, { label: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur();
+                  }}
                 />
               </label>
             )}
@@ -564,18 +651,20 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
               <div className="field">
                 <span>Size (m)</span>
                 <div className="row">
-                  <input
-                    type="number"
+                  <NumberField
+                    aria-label="Area width"
                     min={1}
-                    value={selEl.w}
-                    onChange={(e) => updateEl(selEl.id, { w: Math.max(1, Number(e.target.value)) })}
+                    max={120}
+                    value={selEl.w ?? 10}
+                    onChange={(w) => updateEl(selEl.id, { w })}
                   />
                   ×
-                  <input
-                    type="number"
+                  <NumberField
+                    aria-label="Area height"
                     min={1}
-                    value={selEl.h}
-                    onChange={(e) => updateEl(selEl.id, { h: Math.max(1, Number(e.target.value)) })}
+                    max={120}
+                    value={selEl.h ?? 10}
+                    onChange={(h) => updateEl(selEl.id, { h })}
                   />
                 </div>
               </div>
@@ -599,6 +688,25 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
               <span>Colour</span>
               <Swatches value={selArrow.color} allowAuto onChange={(c) => updateArrow(selArrow.id, { color: c })} />
             </div>
+            <label className="field">
+              <span>Bend</span>
+              <input
+                type="range"
+                min={-0.8}
+                max={0.8}
+                step={0.05}
+                value={Math.max(-0.8, Math.min(0.8, getBend(selArrow)))}
+                onChange={(e) => updateArrow(selArrow.id, withBend(selArrow, Number(e.target.value)))}
+              />
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={selArrow.head !== false}
+                onChange={(e) => updateArrow(selArrow.id, { head: e.target.checked })}
+              />
+              Arrowhead
+            </label>
             <div className="row">
               <button
                 className="btn ghost xs"
@@ -640,24 +748,20 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
               <div className="field">
                 <span>Size (m)</span>
                 <div className="row">
-                  <input
-                    type="number"
+                  <NumberField
+                    aria-label="Pitch width"
                     min={5}
                     max={120}
                     value={pitch.width}
-                    onChange={(e) =>
-                      commit({ ...value, pitch: { ...pitch, width: clampDim(Number(e.target.value)) } })
-                    }
+                    onChange={(width) => commit({ ...value, pitch: { ...pitch, width } })}
                   />
                   ×
-                  <input
-                    type="number"
+                  <NumberField
+                    aria-label="Pitch height"
                     min={5}
                     max={120}
                     value={pitch.height}
-                    onChange={(e) =>
-                      commit({ ...value, pitch: { ...pitch, height: clampDim(Number(e.target.value)) } })
-                    }
+                    onChange={(height) => commit({ ...value, pitch: { ...pitch, height } })}
                   />
                 </div>
               </div>
@@ -790,4 +894,3 @@ function shiftArrow(a: Arrow, dx: number, dy: number): Arrow {
 }
 
 const round = (n: number) => Math.round(n * 100) / 100;
-const clampDim = (n: number) => Math.min(120, Math.max(5, n || 5));

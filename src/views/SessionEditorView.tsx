@@ -4,6 +4,7 @@ import { addClock, categoryColor, formatMinutes, newSession, uid } from '../cons
 import { db } from '../db';
 import { DiagramSVG } from '../diagram/DiagramSVG';
 import { exportSessionPdf } from '../export/pdf';
+import { NumberField } from '../NumberField';
 import { go, replace } from '../router';
 import type { Drill, Session, SessionItem } from '../types';
 import { SaveBadge, useAutosave } from '../useAutosave';
@@ -177,11 +178,12 @@ export function SessionEditorView({ id }: { id: string }) {
                     />
                   </div>
                   <label className="item-dur">
-                    <input
-                      type="number"
+                    <NumberField
+                      aria-label="Minutes"
                       min={0}
+                      max={240}
                       value={it.duration}
-                      onChange={(e) => updateItem(it.id, { duration: Math.max(0, Number(e.target.value)) })}
+                      onChange={(duration) => updateItem(it.id, { duration })}
                     />
                     min
                   </label>
@@ -230,11 +232,11 @@ export function SessionEditorView({ id }: { id: string }) {
             </label>
             <label className="field">
               <span>Planned length (min)</span>
-              <input
-                type="number"
+              <NumberField
                 min={0}
+                max={600}
                 value={session.plannedDuration}
-                onChange={(e) => patch({ plannedDuration: Math.max(0, Number(e.target.value)) })}
+                onChange={(plannedDuration) => patch({ plannedDuration })}
               />
             </label>
           </div>

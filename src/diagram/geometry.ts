@@ -79,11 +79,12 @@ export function arrowShape(a: Arrow, s: number) {
     { x: base.x + dy * (headW / 2), y: base.y - dx * (headW / 2) },
   ];
 
-  const stop = Math.max(0, total - headLen * 0.85);
+  const hasHead = a.head !== false;
+  const stop = hasHead ? Math.max(0, total - headLen * 0.85) : total;
   const shaft: Pt[] = [];
   const amp = 0.45 * s;
   const wave = 1.7 * s;
-  const waveEnd = stop - headLen * 0.6;
+  const waveEnd = hasHead ? stop - headLen * 0.6 : total;
   for (let i = 0; i <= N; i++) {
     if (dist[i] > stop) {
       // Interpolate the exact trim point so the shaft meets the head cleanly.
@@ -107,10 +108,38 @@ export function arrowShape(a: Arrow, s: number) {
 
   return {
     shaft: toPath(shaft),
-    head: head.map((p) => `${fmt(p.x)},${fmt(p.y)}`).join(' '),
+    head: hasHead ? head.map((p) => `${fmt(p.x)},${fmt(p.y)}`).join(' ') : '',
     /** Plain centre-line path, used for hit-testing in the editor. */
     centre: toPath(samples),
     mid: bezier(a, 0.5),
+  };
+}
+
+/**
+ * How far the curve bows out, as a fraction of the line's length (signed:
+ * positive bends to the left of the direction of travel). 0 = straight.
+ */
+export function getBend(a: Arrow) {
+  if (a.cx === undefined || a.cy === undefined) return 0;
+  const dx = a.x2 - a.x1;
+  const dy = a.y2 - a.y1;
+  const L = Math.hypot(dx, dy) || 1;
+  const mx = (a.x1 + a.x2) / 2;
+  const my = a.y1 + dy / 2;
+  return ((a.cx - mx) * (dy / L) - (a.cy - my) * (dx / L)) / L;
+}
+
+/** Control point for a given bend (see getBend); undefined control = straight. */
+export function withBend(a: Arrow, bend: number): Arrow {
+  if (Math.abs(bend) < 0.01) return { ...a, cx: undefined, cy: undefined };
+  const dx = a.x2 - a.x1;
+  const dy = a.y2 - a.y1;
+  const L = Math.hypot(dx, dy) || 1;
+  const r = (n: number) => Math.round(n * 100) / 100;
+  return {
+    ...a,
+    cx: r((a.x1 + a.x2) / 2 + (dy / L) * bend * L),
+    cy: r((a.y1 + a.y2) / 2 - (dx / L) * bend * L),
   };
 }
 

@@ -227,7 +227,7 @@ function ArrowShape({ a, pitch }: { a: Arrow; pitch: Pitch }) {
         strokeLinejoin="round"
         strokeDasharray={a.kind === 'run' ? `${0.9 * s} ${0.65 * s}` : undefined}
       />
-      <polygon points={shape.head} fill={color} />
+      {shape.head && <polygon points={shape.head} fill={color} />}
     </g>
   );
 }
@@ -255,6 +255,8 @@ export interface DiagramSVGProps {
   height?: number;
   /** Adds data-id hooks and invisible hit areas for the editor. */
   interactive?: boolean;
+  /** Accessible name for the drawing. */
+  label?: string;
   /** Editor overlay (selection outlines, handles, previews). */
   children?: ReactNode;
   onPointerDown?: React.PointerEventHandler<SVGSVGElement>;
@@ -272,6 +274,7 @@ export function DiagramSVG({
   interactive,
   children,
   style,
+  label,
   ...handlers
 }: DiagramSVGProps) {
   const { pitch } = diagram;
@@ -300,6 +303,7 @@ export function DiagramSVG({
       width={width}
       height={height}
       className={className}
+      aria-label={label}
       style={width ? style : { background: bg, ...style }}
       {...handlers}
     >
@@ -341,9 +345,29 @@ export function ElementIcon({ el, size = 28 }: { el: Omit<DiagramElement, 'id' |
   );
 }
 
-export function ArrowIcon({ kind, size = 28 }: { kind: Arrow['kind']; size?: number }) {
+export function ArrowIcon({
+  kind,
+  size = 28,
+  curved = false,
+  head = true,
+}: {
+  kind: Arrow['kind'];
+  size?: number;
+  curved?: boolean;
+  head?: boolean;
+}) {
   const pitch: Pitch = { type: 'grid', width: 70, height: 70, style: 'plain' };
-  const a: Arrow = { id: 'icon', kind, x1: -3.8, y1: 3.2, x2: 3.8, y2: -3.2, color: 'black' };
+  const a: Arrow = {
+    id: 'icon',
+    kind,
+    x1: -3.8,
+    y1: 3.2,
+    x2: 3.8,
+    y2: -3.2,
+    color: 'black',
+    head,
+    ...(curved ? { cx: -3.2, cy: -3.4 } : {}),
+  };
   return (
     <svg viewBox="-5 -5 10 10" width={size} height={size}>
       <ArrowShape a={a} pitch={pitch} />
