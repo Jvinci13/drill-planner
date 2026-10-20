@@ -67,6 +67,8 @@ export const PITCH_PRESETS: Record<PitchType, { label: string; width: number; he
   full: { label: 'Full pitch', width: 105, height: 68 },
   half: { label: 'Half pitch', width: 68, height: 52.5 },
   third: { label: 'Final third', width: 68, height: 35 },
+  // 40.3 m wide penalty area plus room either side; deep enough to include the D (20.15 m).
+  box: { label: '18-yard box (GK)', width: 52, height: 25 },
   grid: { label: 'Grid / area', width: 30, height: 20 },
 };
 

@@ -41,7 +41,12 @@ function PitchLayer({ pitch }: { pitch: Pitch }) {
     <g>
       <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill={pal.surround} />
       {pitch.style === 'grass' ? stripes : <rect x={0} y={0} width={W} height={H} fill={pal.a} />}
-      <rect x={0} y={0} width={W} height={H} {...line} />
+      {type === 'box' ? (
+        // A cut-out of the pitch: only the goal line is a real line, so no outline.
+        <line x1={0} y1={0} x2={W} y2={0} {...line} />
+      ) : (
+        <rect x={0} y={0} width={W} height={H} {...line} />
+      )}
       {type === 'full' && (
         <>
           <line x1={W / 2} y1={0} x2={W / 2} y2={H} {...line} />
@@ -51,7 +56,7 @@ function PitchLayer({ pitch }: { pitch: Pitch }) {
           <GoalEnd transform={`translate(${W} ${H / 2}) rotate(90)`} line={line} color={pal.line} />
         </>
       )}
-      {(type === 'half' || type === 'third') && (
+      {(type === 'half' || type === 'third' || type === 'box') && (
         <GoalEnd transform={`translate(${W / 2} 0)`} line={line} color={pal.line} />
       )}
       {type === 'half' && (
@@ -85,7 +90,7 @@ function GoalEnd({
   );
 }
 
-function ElementShape({ el, pitch }: { el: DiagramElement; pitch: Pitch }) {
+export function ElementShape({ el, pitch }: { el: DiagramElement; pitch: Pitch }) {
   const s = unitScale(pitch);
   const fill = resolveColor(el.color, pitch.style);
   const outline = pitch.style === 'grass' ? '#ffffff' : '#333333';
@@ -176,6 +181,69 @@ function ElementShape({ el, pitch }: { el: DiagramElement; pitch: Pitch }) {
         </g>
       );
     }
+    case 'hurdle':
+    case 'hurdleTall': {
+      // Top view: crossbar between two feet; the tall hurdle is wider with a double bar.
+      const tall = el.kind === 'hurdleTall';
+      const w = (tall ? 1.7 : 1.2) * s;
+      const foot = (tall ? 0.45 : 0.3) * s;
+      return (
+        <g transform={at}>
+          {tall ? (
+            <>
+              <line x1={-w / 2} y1={-0.13 * s} x2={w / 2} y2={-0.13 * s} stroke={fill} strokeWidth={0.16 * s} />
+              <line x1={-w / 2} y1={0.13 * s} x2={w / 2} y2={0.13 * s} stroke={fill} strokeWidth={0.16 * s} />
+            </>
+          ) : (
+            <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke={fill} strokeWidth={0.22 * s} />
+          )}
+          <line x1={-w / 2} y1={-foot} x2={-w / 2} y2={foot} stroke={outline} strokeWidth={0.14 * s} strokeLinecap="round" />
+          <line x1={w / 2} y1={-foot} x2={w / 2} y2={foot} stroke={outline} strokeWidth={0.14 * s} strokeLinecap="round" />
+        </g>
+      );
+    }
+    case 'rebounder': {
+      // Top view of a rebound net: framed panel with netting; the thick edge is the playing face.
+      const w = 2.2 * s;
+      const h = 0.7 * s;
+      const frame = el.color === 'auto' ? outline : fill;
+      return (
+        <g transform={at}>
+          <rect x={-w / 2} y={-h / 2} width={w} height={h} fill={frame} fillOpacity={0.18} stroke={frame} strokeWidth={0.1 * s} />
+          {[-0.25, 0, 0.25].map((f) => (
+            <line key={f} x1={f * w} y1={-h / 2} x2={f * w} y2={h / 2} stroke={frame} strokeWidth={0.05 * s} />
+          ))}
+          <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke={frame} strokeWidth={0.05 * s} />
+          <line x1={-w / 2} y1={h / 2} x2={w / 2} y2={h / 2} stroke={frame} strokeWidth={0.24 * s} strokeLinecap="round" />
+        </g>
+      );
+    }
+    case 'ring':
+      return (
+        <g transform={at}>
+          <circle r={0.55 * s} fill="none" stroke={fill} strokeWidth={0.16 * s} />
+        </g>
+      );
+    case 'mat': {
+      const w = 2.4 * s;
+      const h = 1.4 * s;
+      return (
+        <g transform={at}>
+          <rect x={-w / 2} y={-h / 2} width={w} height={h} rx={0.2 * s} fill={fill} fillOpacity={0.85} stroke="#222222" strokeWidth={0.08 * s} />
+          <line x1={-w / 6} y1={-h / 2} x2={-w / 6} y2={h / 2} stroke="#000000" strokeOpacity={0.3} strokeWidth={0.06 * s} />
+          <line x1={w / 6} y1={-h / 2} x2={w / 6} y2={h / 2} stroke="#000000" strokeOpacity={0.3} strokeWidth={0.06 * s} />
+        </g>
+      );
+    }
+    case 'flag':
+      // Tall pole / flag stick, drawn side-on so it reads differently from a short pole.
+      return (
+        <g transform={at}>
+          <line x1={0} y1={0} x2={0} y2={-1.5 * s} stroke={outline} strokeWidth={0.12 * s} strokeLinecap="round" />
+          <polygon points={`0,${-1.5 * s} ${0.9 * s},${-1.25 * s} 0,${-1.0 * s}`} fill={fill} />
+          <circle r={0.2 * s} fill={outline} />
+        </g>
+      );
     case 'text': {
       const fs = 1.6 * s * (el.size ?? 1);
       return (
@@ -235,7 +303,13 @@ function ArrowShape({ a, pitch }: { a: Arrow; pitch: Pitch }) {
 /** Zones sit under everything; arrows go above equipment but below players. */
 const LAYER: Record<DiagramElement['kind'], number> = {
   zone: 0,
+  mat: 0.5,
   ladder: 1,
+  ring: 1,
+  rebounder: 1,
+  hurdle: 2,
+  hurdleTall: 2,
+  flag: 3,
   goal: 1,
   minigoal: 1,
   cone: 2,
@@ -262,6 +336,7 @@ export interface DiagramSVGProps {
   onPointerDown?: React.PointerEventHandler<SVGSVGElement>;
   onPointerMove?: React.PointerEventHandler<SVGSVGElement>;
   onPointerUp?: React.PointerEventHandler<SVGSVGElement>;
+  onPointerLeave?: React.PointerEventHandler<SVGSVGElement>;
   style?: React.CSSProperties;
 }
 
@@ -332,7 +407,7 @@ export function DiagramSVG({
 /** Small swatch-style icon of a single element, for toolbars. */
 export function ElementIcon({ el, size = 28 }: { el: Omit<DiagramElement, 'id' | 'x' | 'y'>; size?: number }) {
   // Goals are drawn behind their goal line (y <= 0), so nudge them down to centre the icon.
-  const y = el.kind === 'goal' ? 1 : el.kind === 'minigoal' ? 0.6 : 0;
+  const y = el.kind === 'goal' ? 1 : el.kind === 'minigoal' ? 0.6 : el.kind === 'flag' ? 0.7 : 0;
   const shown: DiagramElement = { ...el, id: 'icon', x: 0, y };
   // Render at a fixed symbol scale (s = 1) with dark outlines for the light toolbar.
   const scaledPitch: Pitch = { type: 'grid', width: 70, height: 70, style: 'plain' };
