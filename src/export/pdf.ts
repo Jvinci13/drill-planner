@@ -280,7 +280,7 @@ async function drawDrill(w: Writer, drill: Drill, opts: { banner?: string; notes
     await drawDiagrams(w, drill.diagrams, Math.min(100, Math.max(60, free / rows)));
   }
   if (drill.setup.trim()) {
-    w.heading('Organisation');
+    w.heading('Organization');
     w.paragraph(drill.setup);
   }
   if (drill.instructions.trim()) {

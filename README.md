@@ -41,22 +41,32 @@ Drills and sessions are saved automatically in your browser's local storage (Ind
 | `B` | Ball | `M` | Mini goal |
 | `D` | Mannequin | `O` | Pole |
 | `L` | Agility ladder | `Q` | Curved lines on/off |
-| `H` | Arrowheads on/off | | |
+| `H` | Arrowheads on/off | `I` | Plain line (no arrowhead) |
+| `U` | Mini hurdle | `Y` | Tall hurdle |
+| `E` | Rebound net | `K` | Agility ring |
+| `X` | Crash mat | `F` | Tall pole / flag stick |
+
+The **GK & agility** toolbar group holds the goalkeeping kit. Hurdles, the rebound net (its thick
+edge is the playing face), crash mat and flag can be rotated from the right-hand panel.
 
 - Placing tools stay active, so you can click several times to add more. Press `Esc` to finish.
+  A faded preview follows the cursor so you can see where the item will land.
+- Alignment guides: when placing or moving an item, or drawing a line's ends, near the pitch's
+  vertical or horizontal centre, a pink guide appears and the item snaps onto it. Hold `Alt` to
+  place or move freely.
 - Lines: drag to draw. `Q` and `H` set whether new lines are curved and have arrowheads; with a
   line selected they change that line instead. Fine-tune with the **Bend** slider or by dragging
   the blue middle handle.
 - `Del` deletes the selection, `Ctrl+D` duplicates it, arrow keys nudge it (`Shift` moves further),
   `Ctrl+Z` / `Ctrl+Y` undo and redo.
-- With nothing selected, the right panel changes the pitch: full, half, final third, or a custom
+- With nothing selected, the right panel changes the pitch: full, half, final third, 18-yard box (for GK work), or a custom
   grid size, in grass or **print-friendly** (white) style.
 - **+ Diagram** adds another diagram to the drill (e.g. setup, then progressions). Every diagram
   is printed in the PDF.
 
 ## Exporting
 
-- **Export PDF** on a drill produces a one-page A4 sheet (diagrams, organisation, coaching
+- **Export PDF** on a drill produces a one-page A4 sheet (diagrams, organization, coaching
   points, progressions).
 - In the library, tick several drill cards to export them together in one PDF.
 - A **session** PDF has an overview page (timings, mini diagrams, notes) followed by one page per

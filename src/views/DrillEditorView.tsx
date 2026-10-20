@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CATEGORIES, cloneDrill, newDrill, uid } from '../constants';
+import { CATEGORIES, cloneDrill, newDrill, PITCH_PRESETS, uid } from '../constants';
 import { db } from '../db';
 import { DiagramEditor } from '../diagram/DiagramEditor';
 import { exportDrillsPdf } from '../export/pdf';
@@ -107,7 +107,7 @@ export function DrillEditorView({ id }: { id: string }) {
   };
 
   const p = diagram.pitch;
-  const areaHint = p.type === 'grid' ? `${p.width} x ${p.height} m` : p.type === 'full' ? 'Full pitch' : p.type === 'half' ? 'Half pitch' : 'Final third';
+  const areaHint = p.type === 'grid' ? `${p.width} x ${p.height} m` : PITCH_PRESETS[p.type].label;
 
   return (
     <div className="drill-editor">
@@ -207,7 +207,7 @@ export function DrillEditorView({ id }: { id: string }) {
           </label>
           <TextArea label="Objective" rows={2} value={drill.objective} onChange={(v) => patch({ objective: v })}
             placeholder="What should players get better at?" />
-          <TextArea label="Organisation" value={drill.setup} onChange={(v) => patch({ setup: v })}
+          <TextArea label="Organization" value={drill.setup} onChange={(v) => patch({ setup: v })}
             placeholder="Area, equipment, how players are set up" />
           <TextArea label="How it works" rows={4} value={drill.instructions} onChange={(v) => patch({ instructions: v })}
             placeholder="Rules, sequence, scoring" />

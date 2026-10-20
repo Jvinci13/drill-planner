@@ -1,4 +1,4 @@
-export type PitchType = 'full' | 'half' | 'third' | 'grid';
+export type PitchType = 'full' | 'half' | 'third' | 'box' | 'grid';
 export type PitchStyle = 'grass' | 'plain';
 
 /** Pitch dimensions are in metres; all diagram coordinates share that unit. */
@@ -18,6 +18,12 @@ export type ElementKind =
   | 'mannequin'
   | 'pole'
   | 'ladder'
+  | 'hurdle'
+  | 'hurdleTall'
+  | 'rebounder'
+  | 'ring'
+  | 'mat'
+  | 'flag'
   | 'text'
   | 'zone';
 

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { COLOR_KEYS, COLORS, PITCH_PRESETS, uid } from '../constants';
 import type { Arrow, ArrowKind, Diagram, DiagramElement, ElementKind, PitchType } from '../types';
-import { ArrowIcon, DiagramSVG, ElementIcon } from './DiagramSVG';
+import { ArrowIcon, DiagramSVG, ElementIcon, ElementShape } from './DiagramSVG';
 import { NumberField } from '../NumberField';
 import { arrowShape, getBend, unitScale, viewBox, withBend } from './geometry';
 
 type Tool =
   | { t: 'select' }
   | { t: 'place'; kind: ElementKind; color: string; label?: string }
-  | { t: 'arrow'; kind: ArrowKind }
+  /** `plain` draws a solid line with no arrowhead (the Line tool). */
+  | { t: 'arrow'; kind: ArrowKind; plain?: boolean }
   | { t: 'zone' };
 
 type Drag =
@@ -18,6 +19,12 @@ type Drag =
   | { type: 'newZone'; id: string; start: Pt; before: Diagram };
 
 type Pt = { x: number; y: number };
+/** Centre lines currently being snapped to (pitch coordinates). */
+type Guides = { x?: number; y?: number };
+
+/** How close (in screen pixels) an object must be to a centre line to snap onto it. */
+const SNAP_PX = 8;
+const GUIDE_COLOR = '#ff2fa0';
 
 const PLAYER_TOOLS: { color: string; label: string; title: string; key: string }[] = [
   { color: 'red', label: '', title: 'Red team player', key: '1' },
@@ -37,6 +44,16 @@ const EQUIPMENT: { kind: ElementKind; color: string; title: string; key: string 
   { kind: 'ladder', color: 'yellow', title: 'Agility ladder', key: 'L' },
 ];
 
+/** Goalkeeping and agility equipment, in its own toolbar group. */
+const GK_KIT: { kind: ElementKind; color: string; title: string; key: string }[] = [
+  { kind: 'hurdle', color: 'yellow', title: 'Mini hurdle', key: 'U' },
+  { kind: 'hurdleTall', color: 'red', title: 'Tall hurdle', key: 'Y' },
+  { kind: 'rebounder', color: 'auto', title: 'Rebound net (thick edge = face)', key: 'E' },
+  { kind: 'ring', color: 'yellow', title: 'Agility ring', key: 'K' },
+  { kind: 'mat', color: 'blue', title: 'Crash mat', key: 'X' },
+  { kind: 'flag', color: 'yellow', title: 'Tall pole / flag stick', key: 'F' },
+];
+
 const ARROWS: { kind: ArrowKind; title: string; key: string }[] = [
   { kind: 'pass', title: 'Pass (solid)', key: 'P' },
   { kind: 'run', title: 'Run without ball (dashed)', key: 'R' },
@@ -52,8 +69,11 @@ const HOTKEYS: Record<string, Tool> = {
   ...Object.fromEntries(
     PLAYER_TOOLS.map((p) => [p.key, { t: 'place', kind: 'player', color: p.color, label: p.label } as Tool]),
   ),
-  ...Object.fromEntries(EQUIPMENT.map((q) => [q.key, { t: 'place', kind: q.kind, color: q.color } as Tool])),
+  ...Object.fromEntries(
+    [...EQUIPMENT, ...GK_KIT].map((q) => [q.key, { t: 'place', kind: q.kind, color: q.color } as Tool]),
+  ),
   ...Object.fromEntries(ARROWS.map((a) => [a.key, { t: 'arrow', kind: a.kind } as Tool])),
+  I: { t: 'arrow', kind: 'pass', plain: true },
 };
 
 /** Order the cone tool steps through when C is pressed again. */
@@ -61,10 +81,22 @@ const CONE_COLORS = ['orange', 'yellow', 'red', 'blue', 'green', 'white', 'purpl
 /** Bend given to lines drawn while "Curved" is on. */
 const DEFAULT_BEND = 0.25;
 
-const ROTATABLE = new Set<ElementKind>(['goal', 'minigoal', 'mannequin', 'ladder', 'text', 'cone']);
+const ROTATABLE = new Set<ElementKind>([
+  'goal',
+  'minigoal',
+  'mannequin',
+  'ladder',
+  'text',
+  'cone',
+  'hurdle',
+  'hurdleTall',
+  'rebounder',
+  'mat',
+  'flag',
+]);
 
 const HINTS: Record<Tool['t'], string> = {
-  select: 'Click to select · drag to move · Del delete · Ctrl+D duplicate · letter keys pick tools (hover a tool to see its key)',
+  select: 'Click to select · drag to move (snaps to centre lines, hold Alt to move freely) · Del delete · Ctrl+D duplicate',
   place: 'Click the pitch to place · keep clicking to add more · Esc to finish',
   arrow: 'Drag to draw · Q curved on/off · H arrowhead on/off · drag the middle handle to bend · Esc to finish',
   zone: 'Drag to draw an area · Esc to finish',
@@ -83,6 +115,9 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
   const [heads, setHeads] = useState(true);
   const [coneColor, setConeColor] = useState('orange');
   const [focusLabel, setFocusLabel] = useState(false);
+  const [guides, setGuides] = useState<Guides | null>(null);
+  // Cursor position while a placing tool is active, for the placement preview.
+  const [hover, setHover] = useState<Pt | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<Drag | null>(null);
   const valueRef = useRef(value);
@@ -246,6 +281,29 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     input?.select();
   }, [focusLabel]);
 
+  useEffect(() => {
+    setHover(null);
+    setGuides(null);
+  }, [tool]);
+
+  /**
+   * Snaps a point onto the pitch's vertical/horizontal centre line when it is
+   * within SNAP_PX on screen, and shows the matching guide. Alt disables it.
+   */
+  const snap = (x: number, y: number, e: { altKey: boolean }) => {
+    const p = valueRef.current.pitch;
+    const m = svgRef.current?.getScreenCTM();
+    // Capped in metres so a very small canvas doesn't snap from far away.
+    const tol = Math.min(2, m && m.a ? SNAP_PX / m.a : 1);
+    const g: Guides = {};
+    if (!e.altKey) {
+      if (Math.abs(x - p.width / 2) <= tol) x = g.x = p.width / 2;
+      if (Math.abs(y - p.height / 2) <= tol) y = g.y = p.height / 2;
+    }
+    setGuides(g.x === undefined && g.y === undefined ? null : g);
+    return { x, y };
+  };
+
   const toPt = (e: React.PointerEvent): Pt => {
     const svg = svgRef.current!;
     const p = svg.createSVGPoint();
@@ -279,12 +337,8 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     }
 
     if (tool.t === 'place') {
-      const el: DiagramElement = { id: uid(), kind: tool.kind, x: pt.x, y: pt.y, color: tool.color };
-      if (tool.kind === 'player') {
-        const same = v.elements.filter((x) => x.kind === 'player' && x.color === tool.color).length;
-        el.label = tool.label || String(same + 1);
-      }
-      if (tool.kind === 'text') el.label = 'Text';
+      const el = newElement(tool, snap(pt.x, pt.y, e), v);
+      setGuides(null);
       commit({ ...v, elements: [...v.elements, el] });
       setSelected(el.id);
       if (tool.kind === 'text') {
@@ -298,15 +352,16 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     }
 
     if (tool.t === 'arrow') {
+      const start = snap(pt.x, pt.y, e);
       const a: Arrow = {
         id: uid(),
         kind: tool.kind,
-        x1: pt.x,
-        y1: pt.y,
-        x2: pt.x,
-        y2: pt.y,
+        x1: start.x,
+        y1: start.y,
+        x2: start.x,
+        y2: start.y,
         color: 'auto',
-        ...(heads ? {} : { head: false }),
+        ...(heads && !tool.plain ? {} : { head: false }),
       };
       drag.current = { type: 'newArrow', id: a.id, before: v };
       onChange({ ...v, arrows: [...v.arrows, a] });
@@ -337,14 +392,32 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
 
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const d = drag.current;
-    if (!d) return;
-    const pt = toPt(e);
+    if (!d) {
+      // Not dragging: preview where a placement (or a line's start) would land.
+      if (tool.t === 'place') setHover(snap(...xy(toPt(e)), e));
+      else if (tool.t === 'arrow') snap(...xy(toPt(e)), e);
+      else if (guides) setGuides(null);
+      return;
+    }
+    let pt = toPt(e);
     const b = d.before;
     let next: Diagram = valueRef.current;
+    if (d.type === 'newArrow' || (d.type === 'handle' && (d.handle === 'start' || d.handle === 'end'))) {
+      pt = snap(pt.x, pt.y, e);
+    }
 
     if (d.type === 'move') {
-      const dx = pt.x - d.start.x;
-      const dy = pt.y - d.start.y;
+      let dx = pt.x - d.start.x;
+      let dy = pt.y - d.start.y;
+      // Snap the object's centre (a zone's centre, not its corner) to the centre lines.
+      const orig = b.elements.find((el) => el.id === d.id);
+      if (orig) {
+        const ox = orig.kind === 'zone' ? orig.x + (orig.w ?? 0) / 2 : orig.x;
+        const oy = orig.kind === 'zone' ? orig.y + (orig.h ?? 0) / 2 : orig.y;
+        const c = snap(ox + dx, oy + dy, e);
+        dx = c.x - ox;
+        dy = c.y - oy;
+      }
       next = {
         ...next,
         elements: b.elements.map((el) => (el.id === d.id ? { ...el, x: round(el.x + dx), y: round(el.y + dy) } : el)),
@@ -400,6 +473,7 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
   const onPointerUp = () => {
     const d = drag.current;
     drag.current = null;
+    setGuides(null);
     if (!d) return;
     const v = valueRef.current;
     if (d.type === 'newArrow') {
@@ -421,6 +495,12 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     if (v !== d.before) commit(v, d.before);
   };
 
+  const onPointerLeave = () => {
+    if (drag.current) return;
+    setHover(null);
+    setGuides(null);
+  };
+
   const setPitchType = (type: PitchType) => {
     const p = PITCH_PRESETS[type];
     commit({ ...value, pitch: { ...value.pitch, type, width: p.width, height: p.height } });
@@ -432,12 +512,15 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
   return (
     <div className="editor">
       <div className="toolbar" role="toolbar" aria-label="Diagram tools">
+        <div className="tool-group">
         <ToolButton active={tool.t === 'select'} title="Select / move" hotkey="V" onClick={() => setTool({ t: 'select' })}>
           <svg viewBox="0 0 24 24" width={22} height={22}>
             <path d="M5 3l14 8-6 1.5L10 19z" fill="currentColor" />
           </svg>
         </ToolButton>
-        <div className="toolbar-label">Players</div>
+        </div>
+        <div className="tool-group">
+          <div className="toolbar-label">Players</div>
         {PLAYER_TOOLS.map((p) => (
           <ToolButton
             key={p.color}
@@ -449,7 +532,9 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
             <ElementIcon el={{ kind: 'player', color: p.color, label: p.label || '1' }} />
           </ToolButton>
         ))}
-        <div className="toolbar-label">Kit</div>
+        </div>
+        <div className="tool-group">
+          <div className="toolbar-label">Kit</div>
         {EQUIPMENT.map((q) => (
           <ToolButton
             key={q.kind}
@@ -461,18 +546,45 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
             <ElementIcon el={{ kind: q.kind, color: q.kind === 'cone' ? coneColor : q.color }} />
           </ToolButton>
         ))}
-        <div className="toolbar-label">Lines</div>
+        </div>
+        <div className="tool-group">
+          <div className="toolbar-label">GK &amp; agility</div>
+        {GK_KIT.map((q) => (
+          <ToolButton
+            key={q.kind}
+            title={q.title}
+            hotkey={q.key}
+            active={tool.t === 'place' && tool.kind === q.kind}
+            onClick={() => setTool({ t: 'place', kind: q.kind, color: q.color })}
+          >
+            <ElementIcon el={{ kind: q.kind, color: q.color }} />
+          </ToolButton>
+        ))}
+        </div>
+        <div className="tool-group">
+          <div className="toolbar-label">Lines</div>
         {ARROWS.map((a) => (
           <ToolButton
             key={a.kind}
             title={a.title}
             hotkey={a.key}
-            active={tool.t === 'arrow' && tool.kind === a.kind}
+            active={tool.t === 'arrow' && tool.kind === a.kind && !tool.plain}
             onClick={() => setTool({ t: 'arrow', kind: a.kind })}
           >
             <ArrowIcon kind={a.kind} curved={curved} head={heads} />
           </ToolButton>
         ))}
+        <ToolButton
+          title="Line (no arrowhead)"
+          hotkey="I"
+          active={tool.t === 'arrow' && !!tool.plain}
+          onClick={() => setTool({ t: 'arrow', kind: 'pass', plain: true })}
+        >
+          <ArrowIcon kind="pass" curved={curved} head={false} />
+        </ToolButton>
+        </div>
+        <div className="tool-group">
+          <div className="toolbar-label">Line style</div>
         <ToolButton
           active={curved}
           title="Draw curved lines (or curve the selected line)"
@@ -493,7 +605,9 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
         >
           <ArrowIcon kind="pass" />
         </ToolButton>
-        <div className="toolbar-label">Mark</div>
+        </div>
+        <div className="tool-group">
+          <div className="toolbar-label">Mark</div>
         <ToolButton active={tool.t === 'zone'} title="Area / zone" hotkey="A" onClick={() => setTool({ t: 'zone' })}>
           <ElementIcon el={{ kind: 'zone', color: 'blue' }} />
         </ToolButton>
@@ -505,6 +619,7 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
         >
           <span className="text-icon">T</span>
         </ToolButton>
+        </div>
       </div>
 
       <div className="canvas-wrap">
@@ -526,8 +641,38 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onPointerLeave={onPointerLeave}
           style={{ touchAction: 'none' }}
         >
+          {tool.t === 'place' && hover && (
+            <g opacity={0.45} pointerEvents="none">
+              <ElementShape el={newElement(tool, hover, value)} pitch={pitch} />
+            </g>
+          )}
+          {guides?.x !== undefined && (
+            <line
+              x1={guides.x}
+              y1={viewBox(pitch).y}
+              x2={guides.x}
+              y2={viewBox(pitch).y + viewBox(pitch).h}
+              stroke={GUIDE_COLOR}
+              strokeWidth={0.15 * s}
+              strokeDasharray={`${0.8 * s} ${0.5 * s}`}
+              pointerEvents="none"
+            />
+          )}
+          {guides?.y !== undefined && (
+            <line
+              x1={viewBox(pitch).x}
+              y1={guides.y}
+              x2={viewBox(pitch).x + viewBox(pitch).w}
+              y2={guides.y}
+              stroke={GUIDE_COLOR}
+              strokeWidth={0.15 * s}
+              strokeDasharray={`${0.8 * s} ${0.5 * s}`}
+              pointerEvents="none"
+            />
+          )}
           {selEl && selEl.kind === 'zone' && (
             <>
               <rect
@@ -875,11 +1020,30 @@ function labelFor(kind: ElementKind) {
       mannequin: 'Mannequin',
       pole: 'Pole',
       ladder: 'Ladder',
+      hurdle: 'Mini hurdle',
+      hurdleTall: 'Tall hurdle',
+      rebounder: 'Rebound net',
+      ring: 'Agility ring',
+      mat: 'Crash mat',
+      flag: 'Tall pole / flag',
       text: 'Text',
       zone: 'Area',
     } as const
   )[kind];
 }
+
+/** The element a placing tool would create at `pt` (players get the next free number). */
+function newElement(tool: Extract<Tool, { t: 'place' }>, pt: Pt, v: Diagram): DiagramElement {
+  const el: DiagramElement = { id: uid(), kind: tool.kind, x: pt.x, y: pt.y, color: tool.color };
+  if (tool.kind === 'player') {
+    const same = v.elements.filter((x) => x.kind === 'player' && x.color === tool.color).length;
+    el.label = tool.label || String(same + 1);
+  }
+  if (tool.kind === 'text') el.label = 'Text';
+  return el;
+}
+
+const xy = (p: Pt) => [p.x, p.y] as const;
 
 function shiftArrow(a: Arrow, dx: number, dy: number): Arrow {
   return {
