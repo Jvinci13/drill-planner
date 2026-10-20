@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { COLOR_KEYS, COLORS, PITCH_PRESETS, uid } from '../constants';
-import type { Arrow, ArrowKind, Diagram, DiagramElement, ElementKind, PitchType } from '../types';
+import type { Arrow, ArrowKind, Diagram, DiagramElement, ElementKind, Pitch, PitchType } from '../types';
 import { ArrowIcon, DiagramSVG, ElementIcon, ElementShape } from './DiagramSVG';
 import { NumberField } from '../NumberField';
 import { arrowShape, getBend, unitScale, viewBox, withBend } from './geometry';
@@ -13,7 +13,10 @@ type Tool =
   | { t: 'zone' };
 
 type Drag =
-  | { type: 'move'; id: string; start: Pt; before: Diagram }
+  /** Moves every item in `ids`; `primary` (the one grabbed) is what snaps to the guides. */
+  | { type: 'move'; ids: string[]; primary: string; start: Pt; before: Diagram }
+  /** Selection box; `base` is what was already selected when Shift-dragging. */
+  | { type: 'marquee'; start: Pt; base: string[] }
   | { type: 'handle'; id: string; handle: 'start' | 'end' | 'ctrl' | 'resize'; before: Diagram }
   | { type: 'newArrow'; id: string; before: Diagram }
   | { type: 'newZone'; id: string; start: Pt; before: Diagram };
@@ -21,6 +24,13 @@ type Drag =
 type Pt = { x: number; y: number };
 /** Centre lines currently being snapped to (pitch coordinates). */
 type Guides = { x?: number; y?: number };
+
+type Clip = { elements: DiagramElement[]; arrows: Arrow[] };
+type Rect = { x: number; y: number; w: number; h: number };
+
+/** Module-level so you can copy in one diagram or drill and paste into another. */
+let clipboard: Clip | null = null;
+let pasteCount = 0;
 
 /** How close (in screen pixels) an object must be to a centre line to snap onto it. */
 const SNAP_PX = 8;
@@ -95,8 +105,22 @@ const ROTATABLE = new Set<ElementKind>([
   'flag',
 ]);
 
+/** Items whose rotation should be reflected when mirrored (symmetric shapes like cones are left alone). */
+const MIRROR_ROTATES = new Set<ElementKind>([
+  'goal',
+  'minigoal',
+  'mannequin',
+  'ladder',
+  'hurdle',
+  'hurdleTall',
+  'rebounder',
+  'mat',
+  'flag',
+]);
+
 const HINTS: Record<Tool['t'], string> = {
-  select: 'Click to select · drag to move (snaps to centre lines, hold Alt to move freely) · Del delete · Ctrl+D duplicate',
+  select:
+    'Click or drag a box to select · Shift+click to add · drag to move (Alt = no snapping) · Ctrl+C / Ctrl+V copy & paste · Del delete',
   place: 'Click the pitch to place · keep clicking to add more · Esc to finish',
   arrow: 'Drag to draw · Q curved on/off · H arrowhead on/off · drag the middle handle to bend · Esc to finish',
   zone: 'Drag to draw an area · Esc to finish',
@@ -109,7 +133,13 @@ function isTyping(e: KeyboardEvent) {
 
 export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (d: Diagram) => void }) {
   const [tool, setTool] = useState<Tool>({ t: 'select' });
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selIds, setSelIds] = useState<string[]>([]);
+  const selRef = useRef(selIds);
+  selRef.current = selIds;
+  /** The single selected item, which the properties panel edits; null when none or several. */
+  const selected = selIds.length === 1 ? selIds[0] : null;
+  const setSelected = useCallback((id: string | null) => setSelIds(id ? [id] : []), []);
+  const [marquee, setMarquee] = useState<Rect | null>(null);
   // Drawing defaults for new lines and cones; they persist while switching tools.
   const [curved, setCurved] = useState(false);
   const [heads, setHeads] = useState(true);
@@ -165,53 +195,90 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
   const updateArrowRef = useRef(updateArrow);
   updateArrowRef.current = updateArrow;
 
-  const removeSelected = useCallback(() => {
+  /** The selected items, in drawing order. */
+  const selection = (): Clip => {
+    const ids = new Set(selRef.current);
     const v = valueRef.current;
-    if (!selected) return;
-    commit({
-      ...v,
-      elements: v.elements.filter((e) => e.id !== selected),
-      arrows: v.arrows.filter((a) => a.id !== selected),
-    });
-    setSelected(null);
-  }, [selected, commit]);
+    return { elements: v.elements.filter((e) => ids.has(e.id)), arrows: v.arrows.filter((a) => ids.has(a.id)) };
+  };
 
-  const duplicateSelected = useCallback(() => {
-    const v = valueRef.current;
-    const off = 2 * unitScale(v.pitch);
-    const el = v.elements.find((e) => e.id === selected);
-    const ar = v.arrows.find((a) => a.id === selected);
-    if (el) {
-      const copy = { ...el, id: uid(), x: el.x + off, y: el.y + off };
-      commit({ ...v, elements: [...v.elements, copy] });
-      setSelected(copy.id);
-    } else if (ar) {
-      const copy = {
-        ...ar,
-        id: uid(),
-        x1: ar.x1 + off,
-        y1: ar.y1 + off,
-        x2: ar.x2 + off,
-        y2: ar.y2 + off,
-        cx: ar.cx === undefined ? undefined : ar.cx + off,
-        cy: ar.cy === undefined ? undefined : ar.cy + off,
-      };
-      commit({ ...v, arrows: [...v.arrows, copy] });
-      setSelected(copy.id);
-    }
-  }, [selected, commit]);
-
-  const nudge = useCallback(
-    (dx: number, dy: number) => {
+  /** Adds the given items with fresh ids and selects them. */
+  const insert = useCallback(
+    (c: Clip) => {
       const v = valueRef.current;
-      if (!selected) return;
+      const elements = c.elements.map((e) => ({ ...e, id: uid() }));
+      const arrows = c.arrows.map((a) => ({ ...a, id: uid() }));
+      if (!elements.length && !arrows.length) return;
+      commit({ ...v, elements: [...v.elements, ...elements], arrows: [...v.arrows, ...arrows] });
+      setSelIds([...elements, ...arrows].map((x) => x.id));
+    },
+    [commit],
+  );
+
+  /** Replaces selected items in place (same ids), e.g. after moving or flipping. */
+  const replaceSelected = useCallback(
+    (map: (c: Clip) => Clip) => {
+      const v = valueRef.current;
+      const changed = map(selection());
+      const els = new Map(changed.elements.map((e) => [e.id, e]));
+      const ars = new Map(changed.arrows.map((a) => [a.id, a]));
+      if (!els.size && !ars.size) return;
       commit({
         ...v,
-        elements: v.elements.map((e) => (e.id === selected ? { ...e, x: e.x + dx, y: e.y + dy } : e)),
-        arrows: v.arrows.map((a) => (a.id === selected ? shiftArrow(a, dx, dy) : a)),
+        elements: v.elements.map((e) => els.get(e.id) ?? e),
+        arrows: v.arrows.map((a) => ars.get(a.id) ?? a),
       });
     },
-    [selected, commit],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [commit],
+  );
+
+  const removeSelected = useCallback(() => {
+    const v = valueRef.current;
+    const gone = new Set(selRef.current);
+    if (!gone.size) return;
+    commit({ ...v, elements: v.elements.filter((e) => !gone.has(e.id)), arrows: v.arrows.filter((a) => !gone.has(a.id)) });
+    setSelIds([]);
+  }, [commit]);
+
+  const duplicateSelected = useCallback(() => {
+    const off = 2 * unitScale(valueRef.current.pitch);
+    insert(shiftClip(selection(), off, off));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insert]);
+
+  const copySelected = useCallback(() => {
+    const c = selection();
+    if (!c.elements.length && !c.arrows.length) return false;
+    clipboard = structuredClone(c);
+    pasteCount = 0;
+    bump((n) => n + 1);
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const paste = useCallback(() => {
+    if (!clipboard) return;
+    pasteCount += 1;
+    const off = 2 * unitScale(valueRef.current.pitch) * pasteCount;
+    insert(shiftClip(clipboard, off, off));
+  }, [insert]);
+
+  /** Adds a reflected copy of the selection across the pitch's centre line. */
+  const mirrorCopy = useCallback(
+    (axis: 'h' | 'v') => insert(mirrorClip(selection(), axis, valueRef.current.pitch)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [insert],
+  );
+  /** Reflects the selection in place across the pitch's centre line. */
+  const flipSelected = useCallback(
+    (axis: 'h' | 'v') => replaceSelected((c) => mirrorClip(c, axis, valueRef.current.pitch)),
+    [replaceSelected],
+  );
+
+  const nudge = useCallback(
+    (dx: number, dy: number) => replaceSelected((c) => shiftClip(c, dx, dy)),
+    [replaceSelected],
   );
 
   useEffect(() => {
@@ -228,15 +295,32 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
       } else if (ctrl && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         duplicateSelected();
+      } else if (ctrl && e.key.toLowerCase() === 'c') {
+        if (copySelected()) e.preventDefault();
+      } else if (ctrl && e.key.toLowerCase() === 'x') {
+        if (copySelected()) {
+          e.preventDefault();
+          removeSelected();
+        }
+      } else if (ctrl && e.key.toLowerCase() === 'v') {
+        if (clipboard) {
+          e.preventDefault();
+          paste();
+        }
+      } else if (ctrl && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        const v = valueRef.current;
+        setTool({ t: 'select' });
+        setSelIds([...v.elements, ...v.arrows].map((x) => x.id));
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selected) {
+        if (selRef.current.length) {
           e.preventDefault();
           removeSelected();
         }
       } else if (e.key === 'Escape') {
         setTool({ t: 'select' });
         setSelected(null);
-      } else if (e.key.startsWith('Arrow') && selected) {
+      } else if (e.key.startsWith('Arrow') && selRef.current.length) {
         e.preventDefault();
         const step = e.shiftKey ? 2 : 0.5;
         const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
@@ -270,7 +354,7 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [doUndo, doRedo, duplicateSelected, removeSelected, nudge, selected, tool, coneColor]);
+  }, [doUndo, doRedo, duplicateSelected, removeSelected, copySelected, paste, nudge, selected, tool, coneColor, setSelected]);
 
   // After placing a text label, focus its input with the placeholder selected so typing replaces it.
   useEffect(() => {
@@ -382,11 +466,19 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     const hit = target.closest('[data-id]');
     if (hit) {
       const id = hit.getAttribute('data-id')!;
-      setSelected(id);
-      drag.current = { type: 'move', id, start: pt, before: v };
+      if (e.shiftKey) {
+        setSelIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+        return;
+      }
+      // Grabbing part of a multi-selection drags the whole group.
+      const ids = selRef.current.includes(id) ? selRef.current : [id];
+      setSelIds(ids);
+      drag.current = { type: 'move', ids, primary: id, start: pt, before: v };
       capture();
     } else {
-      setSelected(null);
+      drag.current = { type: 'marquee', start: pt, base: e.shiftKey ? selRef.current : [] };
+      if (!e.shiftKey) setSelIds([]);
+      capture();
     }
   };
 
@@ -400,6 +492,13 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
       return;
     }
     let pt = toPt(e);
+    if (d.type === 'marquee') {
+      const r = rectBetween(d.start, pt);
+      setMarquee(r);
+      const inside = itemsInRect(valueRef.current, r);
+      setSelIds([...d.base, ...inside.filter((id) => !d.base.includes(id))]);
+      return;
+    }
     const b = d.before;
     let next: Diagram = valueRef.current;
     if (d.type === 'newArrow' || (d.type === 'handle' && (d.handle === 'start' || d.handle === 'end'))) {
@@ -410,7 +509,7 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
       let dx = pt.x - d.start.x;
       let dy = pt.y - d.start.y;
       // Snap the object's centre (a zone's centre, not its corner) to the centre lines.
-      const orig = b.elements.find((el) => el.id === d.id);
+      const orig = b.elements.find((el) => el.id === d.primary);
       if (orig) {
         const ox = orig.kind === 'zone' ? orig.x + (orig.w ?? 0) / 2 : orig.x;
         const oy = orig.kind === 'zone' ? orig.y + (orig.h ?? 0) / 2 : orig.y;
@@ -418,10 +517,11 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
         dx = c.x - ox;
         dy = c.y - oy;
       }
+      const ids = new Set(d.ids);
       next = {
         ...next,
-        elements: b.elements.map((el) => (el.id === d.id ? { ...el, x: round(el.x + dx), y: round(el.y + dy) } : el)),
-        arrows: b.arrows.map((a) => (a.id === d.id ? shiftArrow(a, dx, dy) : a)),
+        elements: b.elements.map((el) => (ids.has(el.id) ? { ...el, x: round(el.x + dx), y: round(el.y + dy) } : el)),
+        arrows: b.arrows.map((a) => (ids.has(a.id) ? shiftArrow(a, dx, dy) : a)),
       };
     } else if (d.type === 'handle') {
       next = {
@@ -474,7 +574,8 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
     const d = drag.current;
     drag.current = null;
     setGuides(null);
-    if (!d) return;
+    setMarquee(null);
+    if (!d || d.type === 'marquee') return;
     const v = valueRef.current;
     if (d.type === 'newArrow') {
       const a = v.arrows.find((x) => x.id === d.id);
@@ -696,11 +797,71 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
               />
             </>
           )}
+          {selIds.length > 1 &&
+            value.elements
+              .filter((el) => selIds.includes(el.id))
+              .map((el) =>
+                el.kind === 'zone' ? (
+                  <rect
+                    key={el.id}
+                    x={el.x}
+                    y={el.y}
+                    width={el.w}
+                    height={el.h}
+                    fill="none"
+                    stroke="#1a73e8"
+                    strokeWidth={0.2 * s}
+                    strokeDasharray={`${0.5 * s} ${0.4 * s}`}
+                    pointerEvents="none"
+                  />
+                ) : (
+                  <circle
+                    key={el.id}
+                    cx={el.x}
+                    cy={el.y}
+                    r={selectionRadius(el, s)}
+                    fill="none"
+                    stroke="#1a73e8"
+                    strokeWidth={0.2 * s}
+                    strokeDasharray={`${0.5 * s} ${0.4 * s}`}
+                    pointerEvents="none"
+                  />
+                ),
+              )}
+          {selIds.length > 1 &&
+            value.arrows
+              .filter((a) => selIds.includes(a.id))
+              .map((a) => (
+                <path
+                  key={a.id}
+                  d={arrowShape(a, s).centre}
+                  fill="none"
+                  stroke="#1a73e8"
+                  strokeOpacity={0.6}
+                  strokeWidth={0.9 * s}
+                  strokeLinecap="round"
+                  pointerEvents="none"
+                />
+              ))}
+          {marquee && (
+            <rect
+              x={marquee.x}
+              y={marquee.y}
+              width={marquee.w}
+              height={marquee.h}
+              fill="#1a73e8"
+              fillOpacity={0.08}
+              stroke="#1a73e8"
+              strokeWidth={0.12 * s}
+              strokeDasharray={`${0.5 * s} ${0.35 * s}`}
+              pointerEvents="none"
+            />
+          )}
           {selEl && selEl.kind !== 'zone' && (
             <circle
               cx={selEl.x}
               cy={selEl.y}
-              r={(selEl.kind === 'goal' ? 4.4 : selEl.kind === 'ladder' ? 2.6 * s : 1.9 * s)}
+              r={selectionRadius(selEl, s)}
               fill="none"
               stroke="#1a73e8"
               strokeWidth={0.2 * s}
@@ -732,7 +893,34 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
       </div>
 
       <div className="props">
-        {selEl ? (
+        {selIds.length > 1 ? (
+          <>
+            <h4>{selIds.length} items selected</h4>
+            <div className="field">
+              <span>Colour (all)</span>
+              <Swatches
+                value=""
+                allowAuto
+                onChange={(c) =>
+                  replaceSelected((sel) => ({
+                    // Balls have no colour, and players always need a real team colour.
+                    elements: sel.elements
+                      .filter((el) => el.kind !== 'ball' && !(el.kind === 'player' && c === 'auto'))
+                      .map((el) => ({ ...el, color: c })),
+                    arrows: sel.arrows.map((a) => ({ ...a, color: c })),
+                  }))
+                }
+              />
+            </div>
+            <SelectionActions
+              onCopy={copySelected}
+              onDuplicate={duplicateSelected}
+              onDelete={removeSelected}
+              onMirror={mirrorCopy}
+              onFlip={flipSelected}
+            />
+          </>
+        ) : selEl ? (
           <>
             <h4>{labelFor(selEl.kind)}</h4>
             {(selEl.kind === 'player' || selEl.kind === 'text') && (
@@ -814,7 +1002,13 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
                 </div>
               </div>
             )}
-            <SelectionActions onDuplicate={duplicateSelected} onDelete={removeSelected} />
+            <SelectionActions
+              onCopy={copySelected}
+              onDuplicate={duplicateSelected}
+              onDelete={removeSelected}
+              onMirror={mirrorCopy}
+              onFlip={flipSelected}
+            />
           </>
         ) : selArrow ? (
           <>
@@ -874,7 +1068,13 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
                 Reverse
               </button>
             </div>
-            <SelectionActions onDuplicate={duplicateSelected} onDelete={removeSelected} />
+            <SelectionActions
+              onCopy={copySelected}
+              onDuplicate={duplicateSelected}
+              onDelete={removeSelected}
+              onMirror={mirrorCopy}
+              onFlip={flipSelected}
+            />
           </>
         ) : (
           <>
@@ -932,8 +1132,13 @@ export function DiagramEditor({ value, onChange }: { value: Diagram; onChange: (
             >
               Clear diagram
             </button>
+            {clipboard && (
+              <button className="btn ghost xs" onClick={paste}>
+                Paste ({clipboard.elements.length + clipboard.arrows.length} items) · Ctrl+V
+              </button>
+            )}
             <p className="muted small">
-              Select a player, piece of kit or line to edit it. Undo with Ctrl+Z.
+              Select an item to edit it, or drag a box on empty pitch to select several. Undo with Ctrl+Z.
             </p>
           </>
         )}
@@ -996,16 +1201,55 @@ function Swatches({ value, onChange, allowAuto }: { value: string; onChange: (c:
   );
 }
 
-function SelectionActions({ onDuplicate, onDelete }: { onDuplicate: () => void; onDelete: () => void }) {
+function SelectionActions({
+  onCopy,
+  onDuplicate,
+  onDelete,
+  onMirror,
+  onFlip,
+}: {
+  onCopy: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onMirror: (axis: 'h' | 'v') => void;
+  onFlip: (axis: 'h' | 'v') => void;
+}) {
   return (
-    <div className="row sel-actions">
-      <button className="btn ghost xs" onClick={onDuplicate}>
-        Duplicate
-      </button>
-      <button className="btn ghost xs danger" onClick={onDelete}>
-        Delete
-      </button>
-    </div>
+    <>
+      <div className="field sel-actions">
+        <span>Mirror copy across centre</span>
+        <div className="row">
+          <button className="btn ghost xs" onClick={() => onMirror('h')} title="Add a copy reflected left ↔ right">
+            ↔ Left / right
+          </button>
+          <button className="btn ghost xs" onClick={() => onMirror('v')} title="Add a copy reflected top ↕ bottom">
+            ↕ Top / bottom
+          </button>
+        </div>
+      </div>
+      <div className="field">
+        <span>Flip in place</span>
+        <div className="row">
+          <button className="btn ghost xs" onClick={() => onFlip('h')}>
+            ↔ Flip
+          </button>
+          <button className="btn ghost xs" onClick={() => onFlip('v')}>
+            ↕ Flip
+          </button>
+        </div>
+      </div>
+      <div className="row">
+        <button className="btn ghost xs" onClick={onCopy} title="Ctrl+C">
+          Copy
+        </button>
+        <button className="btn ghost xs" onClick={onDuplicate} title="Ctrl+D">
+          Duplicate
+        </button>
+        <button className="btn ghost xs danger" onClick={onDelete} title="Del">
+          Delete
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -1044,6 +1288,70 @@ function newElement(tool: Extract<Tool, { t: 'place' }>, pt: Pt, v: Diagram): Di
 }
 
 const xy = (p: Pt) => [p.x, p.y] as const;
+
+function selectionRadius(el: DiagramElement, s: number) {
+  if (el.kind === 'goal') return 4.4;
+  if (el.kind === 'ladder') return 2.6 * s;
+  if (el.kind === 'mat' || el.kind === 'rebounder') return 1.6 * s;
+  return 1.9 * s;
+}
+
+function shiftClip(c: Clip, dx: number, dy: number): Clip {
+  return {
+    elements: c.elements.map((e) => ({ ...e, x: round(e.x + dx), y: round(e.y + dy) })),
+    arrows: c.arrows.map((a) => shiftArrow(a, dx, dy)),
+  };
+}
+
+const normalizeAngle = (r: number) => ((((r + 180) % 360) + 360) % 360) - 180;
+
+/** Reflects items across the pitch's vertical ('h': left↔right) or horizontal ('v': top↕bottom) centre line. */
+function mirrorClip(c: Clip, axis: 'h' | 'v', p: Pitch): Clip {
+  const fx = (x: number) => (axis === 'h' ? round(p.width - x) : x);
+  const fy = (y: number) => (axis === 'v' ? round(p.height - y) : y);
+  return {
+    elements: c.elements.map((e) => {
+      const m: DiagramElement = { ...e };
+      if (e.kind === 'zone') {
+        // Zones are anchored by their top-left corner.
+        if (axis === 'h') m.x = round(p.width - e.x - (e.w ?? 0));
+        else m.y = round(p.height - e.y - (e.h ?? 0));
+      } else {
+        m.x = fx(e.x);
+        m.y = fy(e.y);
+      }
+      if (MIRROR_ROTATES.has(e.kind)) {
+        const r = e.rotation ?? 0;
+        m.rotation = normalizeAngle(axis === 'h' ? -r : 180 - r);
+      }
+      return m;
+    }),
+    arrows: c.arrows.map((a) => ({
+      ...a,
+      x1: fx(a.x1),
+      y1: fy(a.y1),
+      x2: fx(a.x2),
+      y2: fy(a.y2),
+      cx: a.cx === undefined ? undefined : fx(a.cx),
+      cy: a.cy === undefined ? undefined : fy(a.cy),
+    })),
+  };
+}
+
+function rectBetween(a: Pt, b: Pt): Rect {
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+}
+
+/** Items fully inside a selection box: an element's centre, or both ends of a line. */
+function itemsInRect(v: Diagram, r: Rect) {
+  const inside = (x: number, y: number) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  return [
+    ...v.elements
+      .filter((e) => (e.kind === 'zone' ? inside(e.x + (e.w ?? 0) / 2, e.y + (e.h ?? 0) / 2) : inside(e.x, e.y)))
+      .map((e) => e.id),
+    ...v.arrows.filter((a) => inside(a.x1, a.y1) && inside(a.x2, a.y2)).map((a) => a.id),
+  ];
+}
 
 function shiftArrow(a: Arrow, dx: number, dy: number): Arrow {
   return {

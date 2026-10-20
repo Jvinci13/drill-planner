@@ -57,6 +57,11 @@ edge is the playing face), crash mat and flag can be rotated from the right-hand
 - Lines: drag to draw. `Q` and `H` set whether new lines are curved and have arrowheads; with a
   line selected they change that line instead. Fine-tune with the **Bend** slider or by dragging
   the blue middle handle.
+- Selecting several items: drag a box on empty pitch (with the select tool), `Shift`+click to add
+  or remove single items, or `Ctrl+A` for everything. Dragging any selected item moves the group.
+- `Ctrl+C` / `Ctrl+X` / `Ctrl+V` copy, cut and paste (also between diagrams and drills).
+- Symmetrical set-ups: build one half, select it, then **Mirror copy ↔ / ↕** in the right panel adds
+  a copy reflected across the pitch's centre line. **Flip** reflects the selection in place.
 - `Del` deletes the selection, `Ctrl+D` duplicates it, arrow keys nudge it (`Shift` moves further),
   `Ctrl+Z` / `Ctrl+Y` undo and redo.
 - With nothing selected, the right panel changes the pitch: full, half, final third, 18-yard box (for GK work), or a custom
